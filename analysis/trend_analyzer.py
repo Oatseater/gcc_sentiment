@@ -1,8 +1,3 @@
-"""
-Trend Analysis Engine
-Sentiment velocity, brand scoring, peak detection.
-"""
-
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -10,16 +5,25 @@ from typing import Dict, List, Tuple, Optional
 
 
 def sentiment_score(sentiment: str, confidence: float = 1.0) -> float:
-    """Convert sentiment label to numeric score [-1, 1]."""
     mapping = {'positive': 1.0, 'neutral': 0.0, 'negative': -1.0}
     return mapping.get(sentiment, 0.0) * confidence
 
 
+def _safe_to_datetime(series: pd.Series) -> pd.Series:
+    # Handles mixed formats, ISO strings, already-datetime — robust across pandas versions
+    try:
+        result = pd.to_datetime(series, utc=False, errors='coerce')
+        if result.isna().all():
+            result = pd.to_datetime(series, format='mixed', errors='coerce')
+        return result
+    except Exception:
+        try:
+            return pd.to_datetime(series, format='mixed', errors='coerce')
+        except Exception:
+            return pd.to_datetime(series, infer_datetime_format=True, errors='coerce')
+
+
 def compute_brand_scores(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Aggregate sentiment scores per brand.
-    Returns DataFrame with brand, score, review_count, trend.
-    """
     if 'sentiment' not in df.columns:
         return pd.DataFrame()
 
@@ -50,10 +54,6 @@ def compute_sentiment_timeline(
     brand: Optional[str] = None,
     freq: str = 'W'
 ) -> pd.DataFrame:
-    """
-    Compute sentiment over time.
-    freq: 'D' = daily, 'W' = weekly, 'ME' = monthly
-    """
     if 'timestamp' not in df.columns or 'sentiment' not in df.columns:
         return pd.DataFrame()
 
@@ -64,17 +64,31 @@ def compute_sentiment_timeline(
     if df.empty:
         return pd.DataFrame()
 
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    df['timestamp'] = _safe_to_datetime(df['timestamp'])
+    df = df.dropna(subset=['timestamp'])
+
+    if df.empty:
+        return pd.DataFrame()
+
     df['score'] = df.apply(
         lambda r: sentiment_score(r['sentiment'], r.get('confidence', 0.8)),
         axis=1
     )
     df = df.set_index('timestamp').sort_index()
 
-    timeline = df['score'].resample(freq).agg(['mean', 'count']).reset_index()
-    timeline.columns = ['timestamp', 'avg_score', 'review_count']
+    # Use 'W' and 'ME' which are valid in all recent pandas versions
+    freq_map = {'M': 'ME', 'monthly': 'ME', 'weekly': 'W', 'daily': 'D'}
+    freq = freq_map.get(freq, freq)
 
-    # Rolling average (3-period smoothing)
+    try:
+        timeline = df['score'].resample(freq).agg(['mean', 'count']).reset_index()
+    except Exception:
+        # Fallback: group by week manually
+        df['week'] = df.index.to_period('W').start_time
+        timeline = df.groupby('week')['score'].agg(['mean', 'count']).reset_index()
+        timeline.rename(columns={'week': 'timestamp'}, inplace=True)
+
+    timeline.columns = ['timestamp', 'avg_score', 'review_count']
     timeline['smoothed'] = timeline['avg_score'].rolling(3, min_periods=1).mean()
     timeline['avg_score'] = timeline['avg_score'].round(3)
     timeline['smoothed'] = timeline['smoothed'].round(3)
@@ -83,25 +97,18 @@ def compute_sentiment_timeline(
 
 
 def compute_velocity(timeline: pd.DataFrame) -> Tuple[str, float]:
-    """
-    Sentiment velocity: is the brand improving or declining?
-    Returns (direction_label, velocity_value).
-    """
     if timeline.empty or len(timeline) < 3:
         return ('stable', 0.0)
 
     recent = timeline['smoothed'].iloc[-3:].values
-    if len(recent) < 2:
-        return ('stable', 0.0)
-
     velocity = float(recent[-1] - recent[0])
 
     if velocity > 0.08:
-        label = '▲ Improving'
+        label = 'improving'
     elif velocity < -0.08:
-        label = '▼ Declining'
+        label = 'declining'
     else:
-        label = '— Stable'
+        label = 'stable'
 
     return (label, round(velocity, 3))
 
@@ -111,10 +118,6 @@ def detect_peak_negativity(
     brand: Optional[str] = None,
     top_n: int = 3
 ) -> List[Dict]:
-    """
-    Detect time windows with highest negative sentiment concentration.
-    Returns list of {date, neg_count, avg_score, example_text}.
-    """
     if df.empty or 'sentiment' not in df.columns:
         return []
 
@@ -122,7 +125,8 @@ def detect_peak_negativity(
     if brand:
         df = df[df['brand'] == brand]
 
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    df['timestamp'] = _safe_to_datetime(df['timestamp'])
+    df = df.dropna(subset=['timestamp'])
     df['week'] = df['timestamp'].dt.to_period('W')
     df['score'] = df.apply(
         lambda r: sentiment_score(r['sentiment'], r.get('confidence', 0.8)),
@@ -153,18 +157,11 @@ def detect_peak_negativity(
     return results
 
 
-def get_top_reviews(
-    df: pd.DataFrame,
-    brand: str,
-    sentiment: str,
-    top_n: int = 5
-) -> List[str]:
-    """Get top N reviews by confidence for a brand+sentiment."""
+def get_top_reviews(df: pd.DataFrame, brand: str, sentiment: str, top_n: int = 5) -> List[str]:
     filtered = df[(df['brand'] == brand) & (df['sentiment'] == sentiment)]
     if 'confidence' in filtered.columns:
         filtered = filtered.sort_values('confidence', ascending=False)
-    texts = filtered['text'].dropna().head(top_n).tolist()
-    return texts
+    return filtered['text'].dropna().head(top_n).tolist()
 
 
 def get_word_frequency(
@@ -173,10 +170,6 @@ def get_word_frequency(
     lang: str = 'english',
     top_n: int = 10
 ) -> List[Tuple[str, int]]:
-    """
-    Compute word frequency for English or Arabic text.
-    Returns list of (word, count) sorted descending.
-    """
     import re
     from collections import Counter
 
@@ -188,7 +181,7 @@ def get_word_frequency(
         texts = df[lang_filter]['text'].dropna().tolist()
         stop_words = {'في', 'من', 'على', 'إلى', 'هذا', 'هذه', 'كان', 'كانت', 'مع', 'لكن', 'أو',
                       'أن', 'لأن', 'التي', 'الذي', 'جداً', 'جدا', 'أيضاً', 'أيضا', 'بشكل',
-                      'يكون', 'لا', 'ما', 'كل', 'بعض', 'الـ', 'و', 'ال', 'في', 'عن', 'غير'}
+                      'يكون', 'لا', 'ما', 'كل', 'بعض', 'و', 'ال', 'عن', 'غير'}
         words = []
         for t in texts:
             words.extend(re.findall(r'[\u0600-\u06FF]{3,}', t))
@@ -208,10 +201,6 @@ def get_word_frequency(
 
 
 def actionable_insights(df: pd.DataFrame, brand: str) -> List[Dict]:
-    """
-    Generate data-driven actionable insights for a brand.
-    Returns list of {priority, finding, recommendation, metric}.
-    """
     insights = []
     brand_df = df[df['brand'] == brand] if 'brand' in df.columns else df
 
@@ -219,26 +208,24 @@ def actionable_insights(df: pd.DataFrame, brand: str) -> List[Dict]:
         return insights
 
     total = len(brand_df)
-    neg_pct = (brand_df['sentiment'] == 'negative').sum() / total * 100 if total > 0 else 0
-    pos_pct = (brand_df['sentiment'] == 'positive').sum() / total * 100 if total > 0 else 0
+    neg_pct = (brand_df['sentiment'] == 'negative').sum() / total * 100
+    pos_pct = (brand_df['sentiment'] == 'positive').sum() / total * 100
 
-    # Insight 1: Overall sentiment
     if neg_pct > 40:
         insights.append({
             'priority': 'HIGH',
-            'finding': f'{neg_pct:.0f}% of reviews are negative — brand reputation at risk.',
-            'recommendation': 'Launch immediate customer experience audit. Identify top complaint categories.',
-            'metric': f'{neg_pct:.1f}% negative sentiment'
+            'finding': f'{neg_pct:.0f}% negative — reputation risk.',
+            'recommendation': 'Immediate CX audit. Map top complaint themes to ops owners.',
+            'metric': f'{neg_pct:.1f}% negative'
         })
     elif pos_pct > 70:
         insights.append({
             'priority': 'LOW',
-            'finding': f'{pos_pct:.0f}% positive sentiment — strong brand equity.',
-            'recommendation': 'Leverage positive reviews for marketing. Collect testimonials.',
-            'metric': f'{pos_pct:.1f}% positive sentiment'
+            'finding': f'{pos_pct:.0f}% positive — strong equity.',
+            'recommendation': 'Capture testimonials. Use in acquisition campaigns.',
+            'metric': f'{pos_pct:.1f}% positive'
         })
 
-    # Insight 2: Aspect-level
     if 'aspects_summary' in brand_df.columns:
         all_aspects = brand_df['aspects_summary'].dropna().str.cat(sep=', ')
         delivery_neg = all_aspects.count('delivery: negative')
@@ -247,45 +234,43 @@ def actionable_insights(df: pd.DataFrame, brand: str) -> List[Dict]:
         if delivery_neg > 3:
             insights.append({
                 'priority': 'HIGH',
-                'finding': f'Delivery complaints appear {delivery_neg} times in dataset.',
-                'recommendation': 'Review logistics SLA. Implement real-time delay notifications.',
+                'finding': f'Delivery flagged {delivery_neg}x across dataset.',
+                'recommendation': 'Review logistics SLA. Add proactive delay notifications.',
                 'metric': f'{delivery_neg} delivery complaints'
             })
 
         if service_neg > 3:
             insights.append({
                 'priority': 'MEDIUM',
-                'finding': f'Staff/service issues mentioned {service_neg} times.',
-                'recommendation': 'Staff retraining recommended. Focus on empathy and resolution speed.',
+                'finding': f'Staff/service issues in {service_neg} reviews.',
+                'recommendation': 'Targeted retraining. Focus: resolution speed and empathy.',
                 'metric': f'{service_neg} service complaints'
             })
 
-    # Insight 3: Volume
     if total < 20:
         insights.append({
             'priority': 'LOW',
-            'finding': 'Low review volume limits statistical confidence.',
-            'recommendation': 'Deploy post-transaction review prompts to increase sample size.',
-            'metric': f'{total} total reviews'
+            'finding': 'Low volume — confidence limited.',
+            'recommendation': 'Deploy post-transaction review prompts to increase sample.',
+            'metric': f'{total} reviews'
         })
 
-    # Timeline-based
     timeline = compute_sentiment_timeline(brand_df)
     if not timeline.empty:
         vel_label, vel_val = compute_velocity(timeline)
-        if '▼' in vel_label:
+        if vel_label == 'declining':
             insights.append({
                 'priority': 'HIGH',
-                'finding': f'Sentiment declining (velocity: {vel_val:+.3f}) over recent periods.',
-                'recommendation': 'Monitor social channels for emerging crisis. Respond to top negative reviews.',
-                'metric': f'Velocity: {vel_val:+.3f}'
+                'finding': f'Sentiment declining (Δ{vel_val:+.3f}).',
+                'recommendation': 'Monitor social. Respond to top negative reviews this week.',
+                'metric': f'velocity {vel_val:+.3f}'
             })
-        elif '▲' in vel_label:
+        elif vel_label == 'improving':
             insights.append({
                 'priority': 'LOW',
-                'finding': f'Sentiment improving (velocity: {vel_val:+.3f}) — positive momentum.',
-                'recommendation': 'Continue current quality initiatives. Share wins with ops team.',
-                'metric': f'Velocity: {vel_val:+.3f}'
+                'finding': f'Sentiment improving (Δ{vel_val:+.3f}).',
+                'recommendation': 'Continue current quality programme. Share data with ops.',
+                'metric': f'velocity {vel_val:+.3f}'
             })
 
     return insights
