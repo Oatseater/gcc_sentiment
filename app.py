@@ -28,7 +28,6 @@ footer { display: none !important; }
 .topbar-left { display: flex; align-items: center; gap: 1rem; }
 .app-name { font-size: 0.85rem; font-weight: 600; color: #e2e2e2; letter-spacing: 0.01em; }
 .app-tag { font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; color: #555; background: #1a1a1a; border: 1px solid #2a2a2a; padding: 0.15rem 0.5rem; letter-spacing: 0.05em; }
-.topbar-right { font-family: 'JetBrains Mono', monospace; font-size: 0.62rem; color: #444; }
 .stTabs [data-baseweb="tab-list"] { background: transparent !important; border-bottom: 1px solid #232323 !important; gap: 0 !important; }
 .stTabs [data-baseweb="tab"] { background: transparent !important; border: none !important; font-family: 'Inter', sans-serif !important; font-size: 0.72rem !important; font-weight: 500 !important; color: #555 !important; padding: 0.55rem 1.2rem !important; text-transform: uppercase !important; letter-spacing: 0.04em !important; }
 .stTabs [aria-selected="true"] { color: #e2e2e2 !important; border-bottom: 1px solid #e2e2e2 !important; }
@@ -95,14 +94,13 @@ footer { display: none !important; }
 
 
 # Top bar
-st.markdown(f"""
+st.markdown("""
 <div class="topbar">
   <div class="topbar-left">
     <span class="app-name">GCC Sentiment</span>
     <span class="app-tag">UAE · AR+EN · NLP</span>
     <span class="app-tag">CAMeL-BERT · RoBERTa</span>
   </div>
-  <div class="topbar-right">{datetime.now().strftime('%d %b %Y  %H:%M')} UTC+4</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -482,7 +480,7 @@ with tab3:
                     unsafe_allow_html=True
                 )
                 fig = sentiment_trend_line(timeline, brand_sel)
-                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key=f"trend_{brand_sel}")
 
             st.markdown('<hr class="div">', unsafe_allow_html=True)
 
@@ -560,7 +558,8 @@ with tab4:
                     st.plotly_chart(
                         sentiment_trend_line(tl, bn),
                         use_container_width=True,
-                        config={'displayModeBar': False}
+                        config={'displayModeBar': False},
+                        key=f"cmp_trend_{bn}"
                     )
 
         st.markdown('<hr class="div"><div class="sec">Top terms</div>', unsafe_allow_html=True)
@@ -582,7 +581,8 @@ with tab4:
             st.plotly_chart(
                 brand_comparison_chart(all_scores),
                 use_container_width=True,
-                config={'displayModeBar': False}
+                config={'displayModeBar': False},
+                key="all_brands_ranked"
             )
 
 # Footer
